@@ -1,0 +1,85 @@
+name: Tag Release
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+      - name: Build Windows release
+        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Copy Windows binaries
+        run: |
+          mkdir -p dist
+          cp target/x86_64-pc-windows-msvc/release/winpkey.exe dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifact
+          path: dist/*
+  release:
+    runs-on: ubuntu-latest
+    needs: [build-windows]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for changelog generation
+      
+      # Download all artifacts from previous jobs
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-artifact
+          path: windows/
+
+      # Create zip files
+      - name: Create Windows zip
+        run: |
+          cd windows
+          zip -r ../win64.zip winpkey.exe
+      
+      # Set release title by stripping leading 'v' from tag
+      - name: Set release title
+        id: release_title
+        run: echo "RELEASE_TITLE=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+      
+      # Generate changelog from commits since last tag
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -A1 "${GITHUB_REF#refs/tags/}" | tail -n1)
+          if [ -z "$PREVIOUS_TAG" ]; then
+            PREVIOUS_TAG=$(git rev-list --max-parents=0 HEAD)
+          fi
+          
+          echo "CHANGELOG<<EOF" >> $GITHUB_ENV
+          echo "## 🚀 Release ${{ env.RELEASE_TITLE }}" >> $GITHUB_ENV
+          echo "" >> $GITHUB_ENV
+          echo "### 📦 Downloads" >> $GITHUB_ENV
+          echo "" >> $GITHUB_ENV
+          echo "- **Windows (x64)**: \`win64.zip\`" >> $GITHUB_ENV
+          echo "" >> $GITHUB_ENV
+          echo "### 📝 Changes" >> $GITHUB_ENV
+          echo "" >> $GITHUB_ENV
+          git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges >> $GITHUB_ENV
+          echo "" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+      
+      # Create GitHub release with changelog
+      - uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ env.RELEASE_TITLE }}
+          body: ${{ env.CHANGELOG }}
+          files: |
+            win64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
